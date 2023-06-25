@@ -7,29 +7,17 @@ player-connection-debug=1
 
 let steam_appid = "1184370"
 
-let unityDebugFiles =
-  [ "UnityPlayer.dll"; "WinPixEventRuntime.dll" ]
+let unityDebugFiles = [ "UnityPlayer.dll"; "WinPixEventRuntime.dll" ]
 
-let symlinkFilesFromDirectories =
-  [ "MonoBleedingEdge"
-    Path.Join("MonoBleedingEdge", "EmbedRuntime")
-    "Wrath_Data"
-    Path.Join("Wrath_Data", "Plugins")
-    Path.Join("Wrath_Data", "Plugins", "x86_64")
-    Path.Join("Wrath_Data", "Managed")
-    Path.Join("Wrath_Data", "Managed", "UnityModManager") ]
+let symlinkFolders = [ "Bundles"; "Mods"; "Wrath_Data\\StreamingAssets" ]
 
-let ignoredFiles =
-  [ "blueprints.zip"; Path.Join("Wrath_Data", "boot.config") ]
+let copyDirs = [ "MonoBleedingEdge"; "Wrath_Data";  ]
 
-// let ignoredDirs =
-//   [ "Mods" ]
+let skipFiles = [ "blueprints.zip" ]
 
 let mutable args = fsi.CommandLineArgs
 
-args <-
-  ( if (args.Length < 2) then [||]
-    else args |> Array.skip 1 )
+args <- if (args.Length < 2) then [||] else args |> Array.skip 1
 
 let mutable wrathPath = 
     try
@@ -48,107 +36,146 @@ printf ": "
 
 let pathInput = Console.ReadLine()
 
-wrathPath <- if pathInput = "" then wrathPath else pathInput
+wrathPath <- (if pathInput = "" then wrathPath else pathInput) |> Path.GetFullPath
 
 if (not << Directory.Exists) wrathPath then
     failwith $"Game directory '{wrathPath}' not found"
-
-let outputPath = "Debug"
+    
 let mutable debugWrathPath =
-    if Path.IsPathRooted(outputPath) |> not then Path.Join(wrathPath, outputPath)
-    else outputPath
+    Path.Join(
+        wrathPath
+        |> Path.GetFullPath
+        |> Path.GetDirectoryName,
+        $@"{(DirectoryInfo wrathPath).Name} Debug")
 
 printf $"Debug path [{debugWrathPath}]: "
 
+let rec getAllParentDirNames (dir : string) =
+    seq {
+        let parent = dir |> Path.GetDirectoryName
+        if not (isNull parent) then
+            yield parent
+            yield! getAllParentDirNames parent
+    }
+
+if getAllParentDirNames debugWrathPath |> Seq.contains wrathPath then
+    failwith "Do not place debug directory inside game directory"
+
 let debugPathInput = Console.ReadLine()
 
-debugWrathPath <- if debugPathInput <> "" then debugPathInput else debugWrathPath
+debugWrathPath <- if debugPathInput <> "" then debugPathInput |> Path.GetFullPath else debugWrathPath
 
 let deleteExisting =
     if Path.Exists(debugWrathPath) then
-        printf $"Delete existing files at {debugWrathPath}? [y/N]: "
+        printf $"Remove existing directory {debugWrathPath}? [y/N]: "
+        Console.ReadLine().ToLower() = "y"
+    else false
+
+let overwriteExisting =
+    if not deleteExisting then
+        printf $"Overwrite existing files? [y/N]: "
         Console.ReadLine().ToLower() = "y"
     else false
 
 let verbose = args |> Seq.exists(fun t -> t = "--verbose" || t = "-v")
 
-let printVerbose (s : string) =
+let printfnVerbose (s : string) =
     if verbose then printfn "%s" s
-    
-let createSymlinks() =
 
-    // let ignoredDirs = debugWrathPath :: (ignoredDirs |> List.map (fun d -> Path.Join (wrathPath, d)))
+let createBootConfig() =
+    let path = Path.Join(debugWrathPath, "Wrath_Data", "boot.config")
 
-    if deleteExisting then
-        if Path.Exists debugWrathPath then
-            printfn "Deleting existing debug directory"
-            Directory.Delete(debugWrathPath, true)
+    if (path |> File.Exists && overwriteExisting) then
+        printfnVerbose $"delete {path}"
+        File.Delete(path)
 
-    if (not << Path.Exists) debugWrathPath then
-        printfn "Debug directory does not exist, creating"
-        Directory.CreateDirectory(debugWrathPath) |> ignore
-
-    let dirs = wrathPath :: (symlinkFilesFromDirectories |> List.map (fun d -> Path.Join(wrathPath, d)))
-
-    for path in dirs do
-        let relativeDir = Path.GetRelativePath(wrathPath, path)
-        let linksDir = Path.Join(debugWrathPath, relativeDir)
-
-        printVerbose $"Directory: {path}"
-        if (not << Directory.Exists) path then
-            failwith "Target dir not found"
-
-        if (not << Directory.Exists) linksDir then
-            printVerbose $"  Creating directory: {path}"
-            Directory.CreateDirectory linksDir |> ignore
-
-        let innerDirs = 
-            Directory.GetDirectories(path)
-            |> Seq.where (fun d -> dirs |> Seq.contains d |> not)
-            // |> Seq.where (fun d -> ignoredDirs |> Seq.contains d |> not)
-
-        for dir in innerDirs do
-            printVerbose $"  Directory {dir}"
-            let relativePath = Path.GetRelativePath(wrathPath, dir)
-            printVerbose $"    Relative Path: {relativePath}"
-            let targetPath = Path.Join(wrathPath, relativePath)
-            let linkPath = Path.Join(debugWrathPath, relativePath)
-
-            if (not << Directory.Exists) linkPath then
-                printVerbose $"    Creating directory symlink: {linkPath} -> {targetPath}"
-                Directory.CreateSymbolicLink(linkPath, targetPath) |> ignore
-
-        for f in Directory.GetFiles(path) do
-            printVerbose $"  File: {f}"
-            let relativePath = Path.GetRelativePath(wrathPath, f)
-            printVerbose $"    Relative Path: {relativePath}"
-            
-            if ignoredFiles |> Seq.contains relativePath || unityDebugFiles |> Seq.contains relativePath then
-                printVerbose "    ignored"
-            else
-                let targetPath = Path.Join(wrathPath, relativePath)
-                let linkPath = Path.Join(debugWrathPath, relativePath)
-                
-                if (not << File.Exists) linkPath then
-                    if targetPath.EndsWith(".exe") || targetPath.EndsWith(".dll") then
-                        printVerbose $"    Copying file '{targetPath}' to '{linkPath}'"  
-                        File.Copy(targetPath, linkPath)
-                    else
-                        printVerbose $"    Creating file symlink: {linkPath}-> {targetPath}"
-                        File.CreateSymbolicLink(linkPath, targetPath) |> ignore
-    
-    printfn "Creating boot.config"
-    use file = File.CreateText(Path.Join(debugWrathPath, "Wrath_Data", "boot.config"))
+    printfnVerbose $"create {path}"
+    use file = File.CreateText(path)
     file.Write boot_cfg
 
-    printfn "Creating steam_appid.txt"
-    use file = File.CreateText(Path.Join(debugWrathPath, "steam_appid.txt"))
+let createSteam_appid() =
+    let path = Path.Join(debugWrathPath, "steam_appid.txt")
+
+    if (path |> File.Exists && overwriteExisting) then
+        printfnVerbose $"delete {path}"
+        File.Delete(path)
+
+    printfnVerbose $"create {path}"
+    use file = File.CreateText(path)
     file.Write steam_appid
 
-    for f in unityDebugFiles do
-        let copyTo = Path.Join(debugWrathPath, f)
-        if (not << Path.Exists) copyTo then
-            printVerbose $"Copying file '{f}' to '{copyTo}'" 
-            File.Copy(f, copyTo) |> ignore
+// let getFullPath (rootPath : string) (relativePath : string) =
+//     if relativePath |> Path.IsPathRooted then relativePath
+//     else
+//         Path.Join(rootPath, relativePath)
+    
+let rec createWrathDebug nested dir =
+    if deleteExisting then Directory.Delete(debugWrathPath, true)
 
-createSymlinks()
+    let outDir =
+        Path.Join(debugWrathPath, Path.GetRelativePath(wrathPath, dir))
+        |> Path.GetFullPath
+
+    if not (outDir |> Directory.Exists) then
+        printfnVerbose $"create {outDir}"
+
+        Directory.CreateDirectory(outDir) |> ignore
+
+    for file in Directory.GetFiles(dir) do
+        if not (skipFiles
+            |> Seq.map (fun f -> Path.Join(wrathPath, f))
+            |> Seq.contains file) then
+
+            let relativePath =
+                Path.Join(Path.GetRelativePath(wrathPath, file))
+
+            let copyFrom =
+                if unityDebugFiles |> Seq.contains relativePath then
+                    relativePath |> Path.GetFullPath
+                else
+                    Path.Join(wrathPath, relativePath)
+            
+            let copyTo = 
+                Path.Join(
+                    debugWrathPath,
+                    Path.GetRelativePath(wrathPath, dir),
+                    file |> Path.GetFileName)
+                |> Path.GetFullPath
+            
+            if File.Exists copyTo && not overwriteExisting then
+                failwith $"{copyTo} exists"
+
+            printfnVerbose $"copy {copyFrom} -> {copyTo}"
+            
+            File.Copy(copyFrom, copyTo, overwriteExisting)
+
+        else printfnVerbose $"skipping {file}"
+
+    for d in Directory.GetDirectories(dir) do
+        if symlinkFolders |> Seq.map (fun d -> Path.Join(wrathPath, d)) |> Seq.contains d then
+            let symlink =
+                Path.Join(
+                    debugWrathPath,
+                    Path.GetRelativePath(wrathPath, d))
+                |> Path.GetFullPath
+
+            printfnVerbose $"symlink {d} -> {symlink}"
+            if (DirectoryInfo(symlink)).LinkTarget |> isNull |> not then
+                Directory.Delete(symlink, false)
+
+            Directory.CreateSymbolicLink(symlink, d).ToString() |> ignore
+
+        else if copyDirs |> Seq.map (fun d -> Path.Join(wrathPath, d)) |> Seq.contains d || nested then
+            // let newDir =
+            //     Path.Combine(
+            //         debugWrathPath,
+            //         Path.GetRelativePath(wrathPath, d))
+            //     |> Path.GetFullPath
+
+            createWrathDebug true d
+            
+createWrathDebug false wrathPath
+
+createBootConfig()
+
+createSteam_appid()
